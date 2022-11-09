@@ -14,19 +14,20 @@
  * - Home the machine = HOME
  * - Clear the movement buffer = RESET (note: this will additionally stop movement)
  */
+#include <avr/interrupt.h>
 
 /****************************************************************************************************************/
 /* DEFINE MACROS */
 /****************************************************************************************************************/
-#define MOTOR_GEAR_RATIO_T    20     //Gear ratio for Theta
-#define MOTOR_GEAR_RATIO_R    1      //Gear ratio for Rho
+#define MOTOR_GEAR_RATIO_T    9.75   //Gear ratio for Theta
+#define MOTOR_GEAR_RATIO_R    .25      //Gear ratio for Rho
 #define MOTOR_STEPS_PER_REV   240UL  //Number of steps per motor revolution (this is assuming both motors have the same step ratio
 #define MOTOR_MAX_RPM         400UL  //Maximum RPM of the motor
 #define MOTOR_MAX_SPS         ((MOTOR_MAX_RPM * MOTOR_STEPS_PER_REV) / 60) //Maximum number of motor steps per second
 #define GANTRY_STEPS_PER_REV  (MOTOR_STEPS_PER_REV * MOTOR_GEAR_RATIO_T)   //Number of steps to rotate the gantry one revolution (2pi radians)
 #define GANTRY_STEPS_PER_RAD  (GANTRY_STEPS_PER_REV / (2.0 * PI))            //Number of steps to rotate 1 radian
-#define GANTRY_RADIAL_LENGTH  1      //Gantry radial length, in mm
-#define GANTRY_RADIAL_TPI     17     //Radial arm threads per inch
+#define GANTRY_RADIAL_LENGTH  786.8f //Gantry radial length, in mm
+#define GANTRY_RADIAL_TPI     13     //Radial arm threads per inch
 #define GANTRY_RADIAL_TPMM    (GANTRY_RADIAL_TPI / 25.4f)  //Convert inches to mm
 #define GANTRY_STEPS_PER_MM   (MOTOR_STEPS_PER_REV * MOTOR_GEAR_RATIO_R * GANTRY_RADIAL_TPMM) //Number of steps per mm of radial arm length (rho)
 
@@ -44,18 +45,20 @@
 #define TIMER1_CNTR_CTRL      (1 << WGM12) | (1 << CS11)  //WGM12 bit = Counter Timer Compare mode (reset counter once compare value is reached) 
                                                           //CS11 bit  = Prescalar bit value that coorelates to clk/8.
 #define TIMER1_PRESCALAR_VAL  8                           //Prescalar divide-by value. This must match the bit value defined in TIMER1_CNTR_CTRL.
+
+//F_CPPU  is not defined yet
 #define TIMER1_COMPARE        (F_CPU / (MOTOR_MAX_SPS * TIMER1_PRESCALAR_VAL)) //Calculates the timer compare value based on the CPU Frequency, prescalar, & max steps/second.
 #define TIMER1_COMPARE_REG    (1 << OCIE1A)//0x6  //Value to set the TIMSK1 register to use the value from OCR1A
 
 /****************************************************************************************************************/
 /* STATIC VARIABLES */
 /****************************************************************************************************************/
-static int16_t  stepsRemainingTheta  = 0; //Number of steps remaining to move in the theta direction
-static int16_t  stepsRemainingRho    = 0; //Number of steps remaining to move in the rho direction
+volatile int16_t  stepsRemainingTheta  = 0; //Number of steps remaining to move in the theta direction
+volatile int16_t  stepsRemainingRho    = 0; //Number of steps remaining to move in the rho direction
 static uint16_t isrPerTickTheta      = 0; //Number of ISR periods between theta motor steps
 static uint16_t isrPerTickRho        = 0; //Number of ISR periods between rho motor steps
-static bool enableMotors    = false;      //Enable motors
-static bool endStopDetected = false;      //End stop detected
+volatile bool enableMotors    = false;      //Enable motors
+volatile bool endStopDetected = false;      //End stop detected
 static bool bufferFull      = false;      //This gets set to true when the movement buffer is full
 
 //Setup / initialize hardware
@@ -87,6 +90,7 @@ void loop()
   String     cmdStr;
 
   //Check to ensure that we haven't hit an endstop
+  //jf: Avi, why not do this in the ISR and just not step if it is true? Doing that may simplify logic in that processes that timer interrupts and counts the steps.....there will not need to be any special handling.
   if(digitalRead(PIN_END_STOP) == HIGH)
   {
     endStopDetected = true;
@@ -143,6 +147,7 @@ void parseCommand(String cmdStr)
     //Parse out the rho component
     movementRho   = cmdStr.toFloat();
 
+    //jf: Avi, do you need to take into consideration the current position of the gantry?  If the .thr file contains absolute coordinates, then you need to take into consideration the position of the prior movement and determine the delta.
     //Convert to motor steps
     stepsRemainingTheta = movementTheta * GANTRY_STEPS_PER_RAD;
     stepsRemainingRho = movementRho * GANTRY_STEPS_PER_MM;
@@ -221,6 +226,9 @@ void initTimer1()
  */
 ISR(TIMER1_COMPA_vect)
 {
+    //jf: Avi, this ISR looks like it is stepping every time an interrupt occurrs. I think you need to include a variable to tell the IST when to step.  e.g. take a step every 20 interrupts.
+    // This is needed to mantain constant velocity of theta at different rho positions.
+    // I'm assuming this is not complete because Rho is not processed.....unless there will be another ISR for Rho
   static int triggerStepTheta = 0;
   static int triggerStepRho   = 0;
   
